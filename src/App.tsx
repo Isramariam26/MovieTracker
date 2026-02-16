@@ -419,35 +419,9 @@ function App() {
     setQuery(searchInput)
   }
 
-  const onGoogleAuthClick = async () => {
-    if (!API_BASE_URL) {
-      setError('Set VITE_API_BASE_URL to enable Google sign-in.')
-      return
-    }
-    if (!isSignedIn) {
-      window.location.href = `${API_BASE_URL}/auth/google`
-      return
-    }
-    try {
-      await fetch(`${API_BASE_URL}/auth/logout`, {
-        method: 'POST',
-        credentials: 'include',
-      })
-      setCurrentUser(null)
-      setWatchStates({})
-      setRatings({})
-    } catch {
-      setError('Could not sign out right now.')
-    }
-  }
-
   const onStatusChange = async (movieId: number, status: WatchState) => {
-    if (!isSignedIn) {
-      setError('Please sign in with Google to save watch status.')
-      return
-    }
     setWatchStates((current) => ({ ...current, [movieId]: status }))
-    if (!API_BASE_URL) return
+    if (!API_BASE_URL || !isSignedIn) return
     try {
       await fetch(`${API_BASE_URL}/api/status`, {
         method: 'PUT',
@@ -461,12 +435,8 @@ function App() {
   }
 
   const onRatingChange = async (movieId: number, rating: number) => {
-    if (!isSignedIn) {
-      setError('Please sign in with Google to save ratings.')
-      return
-    }
     setRatings((current) => ({ ...current, [movieId]: rating }))
-    if (!API_BASE_URL) return
+    if (!API_BASE_URL || !isSignedIn) return
     try {
       await fetch(`${API_BASE_URL}/api/rating`, {
         method: 'PUT',
@@ -483,7 +453,16 @@ function App() {
     event.preventDefault()
     if (!activeMovie || !reviewDraft.trim()) return
     if (!isSignedIn || !API_BASE_URL) {
-      setError('Please sign in with Google to publish reviews.')
+      const guestReview: UserReview = {
+        id: `guest-${Date.now()}`,
+        movieId: activeMovie.id,
+        author: profile.displayName,
+        rating: ratings[activeMovie.id] ?? null,
+        content: reviewDraft.trim(),
+        createdAt: new Date().toISOString(),
+      }
+      mergeMovieReviews(activeMovie.id, [guestReview, ...activeMovieReviews])
+      setReviewDraft('')
       return
     }
 
@@ -521,9 +500,7 @@ function App() {
           recommendations based on what you actually watch.
         </p>
         <div className="hero-actions">
-          <button className="primary-button" type="button" onClick={onGoogleAuthClick}>
-            {isSignedIn ? 'Sign Out' : 'Sign in with Google'}
-          </button>
+          <span className="supporting-text">Guest mode enabled</span>
           <span className="supporting-text">
             {TMDB_API_KEY || TMDB_READ_ACCESS_TOKEN
               ? 'Live TMDB data connected'
@@ -714,8 +691,8 @@ function App() {
                   rows={4}
                   placeholder="Share what stood out to you..."
                 />
-                <button className="primary-button" type="submit" disabled={!isSignedIn}>
-                  {isSignedIn ? 'Publish Review' : 'Sign in to Review'}
+                <button className="primary-button" type="submit" disabled={!reviewDraft.trim()}>
+                  Publish Review
                 </button>
               </form>
             </>
