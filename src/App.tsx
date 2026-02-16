@@ -40,6 +40,7 @@ type AuthUser = {
 const TMDB_BASE_URL = 'https://api.themoviedb.org/3'
 const TMDB_IMAGE_URL = 'https://image.tmdb.org/t/p/w500'
 const TMDB_API_KEY = import.meta.env.VITE_TMDB_API_KEY as string | undefined
+const TMDB_READ_ACCESS_TOKEN = import.meta.env.VITE_TMDB_READ_ACCESS_TOKEN as string | undefined
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL as string | undefined
 
 const fallbackGenres: Genre[] = [
@@ -132,6 +133,38 @@ function getMovieGenres(movie: Movie, genreMap: Record<number, string>): string[
     return movie.genres.map((g) => g.name)
   }
   return (movie.genre_ids ?? []).map((id) => genreMap[id]).filter(Boolean)
+}
+
+async function fetchTmdb(
+  path: string,
+  params: Record<string, string | number | boolean> = {},
+): Promise<Response> {
+  const requestParams = new URLSearchParams()
+
+  for (const [key, value] of Object.entries(params)) {
+    requestParams.set(key, String(value))
+  }
+
+  const headers: Record<string, string> = {}
+
+  if (TMDB_API_KEY) {
+    requestParams.set('api_key', TMDB_API_KEY)
+  } else if (TMDB_READ_ACCESS_TOKEN) {
+    headers.Authorization = `Bearer ${TMDB_READ_ACCESS_TOKEN}`
+  } else {
+    throw new Error('TMDB credentials missing')
+  }
+
+  const queryString = requestParams.toString()
+  const response = await fetch(`${TMDB_BASE_URL}${path}${queryString ? `?${queryString}` : ''}`, {
+    headers,
+  })
+
+  if (!response.ok) {
+    throw new Error(`TMDB request failed (${response.status})`)
+  }
+
+  return response
 }
 
 function App() {
@@ -249,14 +282,12 @@ function App() {
   }
 
   const loadGenres = async () => {
-    if (!TMDB_API_KEY) {
+    if (!TMDB_API_KEY && !TMDB_READ_ACCESS_TOKEN) {
       setGenres(fallbackGenres)
       return
     }
     try {
-      const response = await fetch(
-        `${TMDB_BASE_URL}/genre/movie/list?api_key=${TMDB_API_KEY}&language=en-US`,
-      )
+      const response = await fetchTmdb('/genre/movie/list', { language: 'en-US' })
       const data = (await response.json()) as { genres?: Genre[] }
       if (data.genres?.length) {
         setGenres(data.genres)
@@ -270,7 +301,7 @@ function App() {
     setLoading(true)
     setError(null)
 
-    if (!TMDB_API_KEY) {
+    if (!TMDB_API_KEY && !TMDB_READ_ACCESS_TOKEN) {
       setMovies(fallbackMovies)
       setRecommendations(fallbackMovies.slice(0, 2))
       setActiveMovie((current) => current ?? fallbackMovies[0] ?? null)
@@ -279,25 +310,33 @@ function App() {
     }
 
     try {
-      let endpoint = ''
-      const encodedQuery = encodeURIComponent(query.trim())
-      if (encodedQuery) {
-        endpoint = `/search/movie?api_key=${TMDB_API_KEY}&query=${encodedQuery}&include_adult=false`
+      let path = ''
+      let params: Record<string, string | number | boolean> = {}
+      const trimmedQuery = query.trim()
+      if (trimmedQuery) {
+        path = '/search/movie'
+        params = { query: trimmedQuery, include_adult: false, language: 'en-US', page: 1 }
       } else if (feed === 'top-rated') {
-        endpoint = `/movie/top_rated?api_key=${TMDB_API_KEY}&language=en-US&page=1`
+        path = '/movie/top_rated'
+        params = { language: 'en-US', page: 1 }
       } else if (feed === 'recent') {
-        endpoint = `/discover/movie?api_key=${TMDB_API_KEY}&sort_by=primary_release_date.desc&vote_count.gte=50&page=1`
+        path = '/discover/movie'
+        params = { sort_by: 'primary_release_date.desc', 'vote_count.gte': 50, page: 1 }
       } else if (feed === 'genre') {
-        endpoint = `/discover/movie?api_key=${TMDB_API_KEY}&with_genres=${selectedGenre}&sort_by=popularity.desc&page=1`
+        path = '/discover/movie'
+        params = { with_genres: selectedGenre, sort_by: 'popularity.desc', page: 1 }
       } else {
-        endpoint = `/trending/movie/week?api_key=${TMDB_API_KEY}`
+        path = '/trending/movie/week'
       }
 
-      const response = await fetch(`${TMDB_BASE_URL}${endpoint}`)
+      const response = await fetchTmdb(path, params)
       const data = (await response.json()) as { results?: Movie[] }
       const nextMovies = data.results?.slice(0, 24) ?? []
       setMovies(nextMovies)
-      setActiveMovie((current) => current ?? nextMovies[0] ?? null)
+      setActiveMovie(nextMovies[0] ?? null)
+      if (trimmedQuery && nextMovies.length === 0) {
+        setError(`No results found for "${trimmedQuery}".`)
+      }
     } catch {
       setError('Could not load movies right now. Showing offline sample data.')
       setMovies(fallbackMovies)
@@ -324,7 +363,7 @@ function App() {
       .slice(0, 2)
       .map(([genreId]) => Number(genreId))
 
-    if (!TMDB_API_KEY || rankedGenres.length === 0) {
+    if ((!TMDB_API_KEY && !TMDB_READ_ACCESS_TOKEN) || rankedGenres.length === 0) {
       const fallback = movies
         .filter((movie) => !watchStates[movie.id] || watchStates[movie.id] === 'watchlist')
         .slice(0, 8)
@@ -333,9 +372,12 @@ function App() {
     }
 
     try {
-      const response = await fetch(
-        `${TMDB_BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&with_genres=${rankedGenres.join(',')}&sort_by=vote_average.desc&vote_count.gte=1000&page=1`,
-      )
+      const response = await fetchTmdb('/discover/movie', {
+        with_genres: rankedGenres.join(','),
+        sort_by: 'vote_average.desc',
+        'vote_count.gte': 1000,
+        page: 1,
+      })
       const data = (await response.json()) as { results?: Movie[] }
       const recs = (data.results ?? []).filter((movie) => !watchStates[movie.id]).slice(0, 8)
       setRecommendations(recs)
@@ -483,7 +525,9 @@ function App() {
             {isSignedIn ? 'Sign Out' : 'Sign in with Google'}
           </button>
           <span className="supporting-text">
-            {TMDB_API_KEY ? 'Live TMDB data connected' : 'Offline sample mode (set VITE_TMDB_API_KEY)'}
+            {TMDB_API_KEY || TMDB_READ_ACCESS_TOKEN
+              ? 'Live TMDB data connected'
+              : 'Offline sample mode (set VITE_TMDB_API_KEY or VITE_TMDB_READ_ACCESS_TOKEN)'}
           </span>
         </div>
       </header>
